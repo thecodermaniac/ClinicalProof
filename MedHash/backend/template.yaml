@@ -1,0 +1,201 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: MedHash - PubMed Paper Hashing Application
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.9
+    Environment:
+      Variables:
+        TABLE_PAPERS: !Ref PapersTable
+        TABLE_SUMMARIES: !Ref SummariesTable
+        TABLE_VERIFICATIONS: !Ref VerificationsTable
+        BEDROCK_MODEL_ID: amazon.nova-lite-v1:0
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+
+Resources:
+  # ========== DYNAMODB TABLES ==========
+  PapersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub medhash-papers-${Environment}
+      AttributeDefinitions:
+        - AttributeName: pmid
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pmid
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      Tags:
+        - Key: Project
+          Value: MedHash
+
+  SummariesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub medhash-summaries-${Environment}
+      AttributeDefinitions:
+        - AttributeName: summaryId
+          AttributeType: S
+        - AttributeName: pmid
+          AttributeType: S
+      KeySchema:
+        - AttributeName: summaryId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: by-pmid
+          KeySchema:
+            - AttributeName: pmid
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+      Tags:
+        - Key: Project
+          Value: MedHash
+
+  VerificationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub medhash-verifications-${Environment}
+      AttributeDefinitions:
+        - AttributeName: hash
+          AttributeType: S
+        - AttributeName: pmid
+          AttributeType: S
+      KeySchema:
+        - AttributeName: hash
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: by-pmid
+          KeySchema:
+            - AttributeName: pmid
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+      Tags:
+        - Key: Project
+          Value: MedHash
+
+  # ========== LAMBDA FUNCTIONS ==========
+  FetchPubMedFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medhash-fetch-pubmed-${Environment}
+      CodeUri: functions/fetch-pubmed/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PapersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SummariesTable
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref PapersTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /fetch
+            Method: post
+            RestApiId: !Ref MedHashApi
+
+  GenerateSummaryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medhash-generate-summary-${Environment}
+      CodeUri: functions/generate-summary/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PapersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SummariesTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: "*"
+      Environment:
+        Variables:
+          SUMMARIES_TABLE: !Ref SummariesTable
+          PAPERS_TABLE: !Ref PapersTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /summarize
+            Method: post
+            RestApiId: !Ref MedHashApi
+
+  CreateHashFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medhash-create-hash-${Environment}
+      CodeUri: functions/create-hash/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PapersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SummariesTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref VerificationsTable
+      Environment:
+        Variables:
+          VERIFICATIONS_TABLE: !Ref VerificationsTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /hash
+            Method: post
+            RestApiId: !Ref MedHashApi
+
+  VerifyHashFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medhash-verify-hash-${Environment}
+      CodeUri: functions/verify-hash/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref VerificationsTable
+      Environment:
+        Variables:
+          VERIFICATIONS_TABLE: !Ref VerificationsTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /verify/{hash}
+            Method: get
+            RestApiId: !Ref MedHashApi
+
+  # ========== API GATEWAY ==========
+  MedHashApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub medhash-api-${Environment}
+      StageName: !Ref Environment
+      Cors:
+        AllowMethods: "'*'"
+        AllowHeaders: "'*'"
+        AllowOrigin: "'*'"
+      Tags:
+        Project: MedHash
+
+Outputs:
+  ApiEndpoint:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${MedHashApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/"
