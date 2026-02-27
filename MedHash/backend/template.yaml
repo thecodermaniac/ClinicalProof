@@ -1,18 +1,28 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: MedHash - PubMed Paper Hashing Application
+Description: MedHash - PubMed Paper Hashing Application with Blockchain Verification
 
 Globals:
   Function:
     Timeout: 30
     MemorySize: 512
     Runtime: python3.9
+    Architectures:
+      - x86_64
     Environment:
       Variables:
         TABLE_PAPERS: !Ref PapersTable
         TABLE_SUMMARIES: !Ref SummariesTable
         TABLE_VERIFICATIONS: !Ref VerificationsTable
-        BEDROCK_MODEL_ID: amazon.nova-lite-v1:0
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
+        POWERTOOLS_SERVICE_NAME: medhash
+        POWERTOOLS_METRICS_NAMESPACE: MedHash
+        LOG_LEVEL: INFO
+    Layers:
+      - !Ref CommonLayer
+    Tracing: Active
+    Tags:
+      Project: MedHash
 
 Parameters:
   Environment:
@@ -20,9 +30,92 @@ Parameters:
     Default: dev
     AllowedValues:
       - dev
+      - staging
       - prod
+    Description: Environment name (dev, staging, prod)
+  
+  BedrockModelId:
+    Type: String
+    Default: amazon.nova-lite-v1:0
+    Description: Bedrock model ID for summaries
+    AllowedValues:
+      - amazon.nova-lite-v1:0
+      - amazon.nova-micro-v1:0
+      - anthropic.claude-3-haiku-20240307-v1:0
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    Description: CloudWatch log retention in days
+    AllowedValues:
+      - 1
+      - 3
+      - 5
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+      - 120
+      - 150
+      - 180
+      - 365
+
+  PubMedRateLimit:
+    Type: Number
+    Default: 3
+    Description: PubMed API rate limit (requests per second)
+    MinValue: 1
+    MaxValue: 10
+
+  EnableXRay:
+    Type: String
+    Default: true
+    AllowedValues:
+      - true
+      - false
+    Description: Enable X-Ray tracing
+
+  AlarmEmail:
+    Type: String
+    Default: ""
+    Description: Email for CloudWatch alarms (optional)
+
+Mappings:
+  EnvironmentMap:
+    dev:
+      DynamoDBBillingMode: PAY_PER_REQUEST
+      LambdaReservedConcurrency: 5
+      ApiStageName: dev
+      ApiThrottleRate: 10
+      ApiThrottleBurst: 20
+    staging:
+      DynamoDBBillingMode: PAY_PER_REQUEST
+      LambdaReservedConcurrency: 10
+      ApiStageName: staging
+      ApiThrottleRate: 50
+      ApiThrottleBurst: 100
+    prod:
+      DynamoDBBillingMode: PROVISIONED
+      LambdaReservedConcurrency: 50
+      ApiStageName: prod
+      ApiThrottleRate: 100
+      ApiThrottleBurst: 200
 
 Resources:
+  # ========== LAMBDA LAYERS ==========
+  CommonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub medhash-common-${Environment}
+      Description: Common utilities for MedHash Lambda functions
+      ContentUri: layers/common/
+      CompatibleRuntimes:
+        - python3.9
+      RetentionPolicy: Delete
+    Metadata:
+      BuildMethod: python3.9
+
   # ========== DYNAMODB TABLES ==========
   PapersTable:
     Type: AWS::DynamoDB::Table
@@ -31,13 +124,40 @@ Resources:
       AttributeDefinitions:
         - AttributeName: pmid
           AttributeType: S
+        - AttributeName: fetched_at
+          AttributeType: S
+        - AttributeName: journal
+          AttributeType: S
+        - AttributeName: pubdate
+          AttributeType: S
       KeySchema:
         - AttributeName: pmid
           KeyType: HASH
-      BillingMode: PAY_PER_REQUEST
+      GlobalSecondaryIndexes:
+        - IndexName: by-fetched
+          KeySchema:
+            - AttributeName: fetched_at
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: by-journal
+          KeySchema:
+            - AttributeName: journal
+              KeyType: HASH
+            - AttributeName: pubdate
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
+      BillingMode: !FindInMap [EnvironmentMap, !Ref Environment, DynamoDBBillingMode]
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
       Tags:
         - Key: Project
           Value: MedHash
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: Papers
 
   SummariesTable:
     Type: AWS::DynamoDB::Table
@@ -48,6 +168,10 @@ Resources:
           AttributeType: S
         - AttributeName: pmid
           AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+        - AttributeName: model
+          AttributeType: S
       KeySchema:
         - AttributeName: summaryId
           KeyType: HASH
@@ -56,12 +180,28 @@ Resources:
           KeySchema:
             - AttributeName: pmid
               KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
           Projection:
             ProjectionType: ALL
-      BillingMode: PAY_PER_REQUEST
+        - IndexName: by-model
+          KeySchema:
+            - AttributeName: model
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
+      BillingMode: !FindInMap [EnvironmentMap, !Ref Environment, DynamoDBBillingMode]
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
       Tags:
         - Key: Project
           Value: MedHash
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: Summaries
 
   VerificationsTable:
     Type: AWS::DynamoDB::Table
@@ -72,6 +212,10 @@ Resources:
           AttributeType: S
         - AttributeName: pmid
           AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+        - AttributeName: verification_count
+          AttributeType: N
       KeySchema:
         - AttributeName: hash
           KeyType: HASH
@@ -80,28 +224,56 @@ Resources:
           KeySchema:
             - AttributeName: pmid
               KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
           Projection:
             ProjectionType: ALL
-      BillingMode: PAY_PER_REQUEST
+        - IndexName: by-verification-count
+          KeySchema:
+            - AttributeName: verification_count
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: KEYS_ONLY
+      BillingMode: !FindInMap [EnvironmentMap, !Ref Environment, DynamoDBBillingMode]
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
       Tags:
         - Key: Project
           Value: MedHash
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Service
+          Value: Verifications
 
   # ========== LAMBDA FUNCTIONS ==========
   FetchPubMedFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub medhash-fetch-pubmed-${Environment}
+      Description: Fetches paper metadata and abstracts from PubMed API
       CodeUri: functions/fetch-pubmed/
       Handler: app.lambda_handler
+      ReservedConcurrentExecutions: !FindInMap [EnvironmentMap, !Ref Environment, LambdaReservedConcurrency]
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref PapersTable
         - DynamoDBCrudPolicy:
             TableName: !Ref SummariesTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+                - xray:PutTraceSegments
+                - xray:PutTelemetryRecords
+              Resource: "*"
       Environment:
         Variables:
           TABLE_NAME: !Ref PapersTable
+          RATE_LIMIT: !Ref PubMedRateLimit
       Events:
         Api:
           Type: Api
@@ -109,13 +281,19 @@ Resources:
             Path: /fetch
             Method: post
             RestApiId: !Ref MedHashApi
+      Tags:
+        Project: MedHash
+        Function: FetchPubMed
+        Environment: !Ref Environment
 
   GenerateSummaryFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub medhash-generate-summary-${Environment}
+      Description: Generates AI-powered summaries using Amazon Bedrock
       CodeUri: functions/generate-summary/
       Handler: app.lambda_handler
+      ReservedConcurrentExecutions: !FindInMap [EnvironmentMap, !Ref Environment, LambdaReservedConcurrency]
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref PapersTable
@@ -125,11 +303,22 @@ Resources:
             - Effect: Allow
               Action:
                 - bedrock:InvokeModel
+                - bedrock:InvokeModelWithResponseStream
+                - bedrock:ListFoundationModels
+              Resource: "*"
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+                - xray:PutTraceSegments
+                - xray:PutTelemetryRecords
               Resource: "*"
       Environment:
         Variables:
           SUMMARIES_TABLE: !Ref SummariesTable
           PAPERS_TABLE: !Ref PapersTable
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
       Events:
         Api:
           Type: Api
@@ -137,13 +326,19 @@ Resources:
             Path: /summarize
             Method: post
             RestApiId: !Ref MedHashApi
+      Tags:
+        Project: MedHash
+        Function: GenerateSummary
+        Environment: !Ref Environment
 
   CreateHashFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub medhash-create-hash-${Environment}
+      Description: Creates SHA-256 hash for blockchain verification
       CodeUri: functions/create-hash/
       Handler: app.lambda_handler
+      ReservedConcurrentExecutions: !FindInMap [EnvironmentMap, !Ref Environment, LambdaReservedConcurrency]
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref PapersTable
@@ -151,6 +346,15 @@ Resources:
             TableName: !Ref SummariesTable
         - DynamoDBCrudPolicy:
             TableName: !Ref VerificationsTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+                - xray:PutTraceSegments
+                - xray:PutTelemetryRecords
+              Resource: "*"
       Environment:
         Variables:
           VERIFICATIONS_TABLE: !Ref VerificationsTable
@@ -161,16 +365,31 @@ Resources:
             Path: /hash
             Method: post
             RestApiId: !Ref MedHashApi
+      Tags:
+        Project: MedHash
+        Function: CreateHash
+        Environment: !Ref Environment
 
   VerifyHashFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub medhash-verify-hash-${Environment}
+      Description: Verifies and retrieves hash records
       CodeUri: functions/verify-hash/
       Handler: app.lambda_handler
+      ReservedConcurrentExecutions: !FindInMap [EnvironmentMap, !Ref Environment, LambdaReservedConcurrency]
       Policies:
         - DynamoDBReadPolicy:
             TableName: !Ref VerificationsTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+                - xray:PutTraceSegments
+                - xray:PutTelemetryRecords
+              Resource: "*"
       Environment:
         Variables:
           VERIFICATIONS_TABLE: !Ref VerificationsTable
@@ -181,21 +400,211 @@ Resources:
             Path: /verify/{hash}
             Method: get
             RestApiId: !Ref MedHashApi
+      Tags:
+        Project: MedHash
+        Function: VerifyHash
+        Environment: !Ref Environment
 
   # ========== API GATEWAY ==========
   MedHashApi:
     Type: AWS::Serverless::Api
     Properties:
       Name: !Sub medhash-api-${Environment}
-      StageName: !Ref Environment
+      StageName: !FindInMap [EnvironmentMap, !Ref Environment, ApiStageName]
+      Description: API for MedHash application
       Cors:
-        AllowMethods: "'*'"
-        AllowHeaders: "'*'"
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
         AllowOrigin: "'*'"
+        AllowCredentials: false
+        MaxAge: "'600'"
+      Auth:
+        DefaultAuthorizer: NONE
+        AddDefaultAuthorizerToCorsPreflight: false
+      EndpointConfiguration:
+        Type: REGIONAL
+      MethodSettings:
+        - LoggingLevel: INFO
+          MetricsEnabled: true
+          DataTraceEnabled: !If [IsProd, false, true]
+          ResourcePath: "/*"
+          HttpMethod: "*"
+          ThrottlingRateLimit: !FindInMap [EnvironmentMap, !Ref Environment, ApiThrottleRate]
+          ThrottlingBurstLimit: !FindInMap [EnvironmentMap, !Ref Environment, ApiThrottleBurst]
       Tags:
         Project: MedHash
+        Environment: !Ref Environment
+
+  # ========== CLOUDWATCH LOG GROUPS ==========
+  FetchPubMedLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medhash-fetch-pubmed-${Environment}
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MedHash
+
+  GenerateSummaryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medhash-generate-summary-${Environment}
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MedHash
+
+  CreateHashLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medhash-create-hash-${Environment}
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MedHash
+
+  VerifyHashLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medhash-verify-hash-${Environment}
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MedHash
+
+  # ========== CLOUDWATCH ALARMS ==========
+  FetchPubMedErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateAlarms
+    Properties:
+      AlarmName: !Sub medhash-fetch-pubmed-errors-${Environment}
+      AlarmDescription: Alarm for FetchPubMed function errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref FetchPubMedFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmEmail, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+  GenerateSummaryErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: CreateAlarms
+    Properties:
+      AlarmName: !Sub medhash-generate-summary-errors-${Environment}
+      AlarmDescription: Alarm for GenerateSummary function errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref GenerateSummaryFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: !If [HasAlarmEmail, [!Ref AlarmTopic], !Ref AWS::NoValue]
+
+  # ========== SNS TOPIC FOR ALARMS ==========
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      TopicName: !Sub medhash-alarms-${Environment}
+      Subscription:
+        - Endpoint: !Ref AlarmEmail
+          Protocol: email
+      Tags:
+        - Key: Project
+          Value: MedHash
+
+  # ========== X-RAY ==========
+  XRaySamplingRule:
+    Type: AWS::XRay::SamplingRule
+    Condition: EnableXRay
+    Properties:
+      SamplingRule:
+        RuleName: !Sub medhash-${Environment}
+        ResourceARN: "*"
+        Priority: 1
+        FixedRate: 0.05
+        ReservoirSize: 5
+        ServiceName: "medhash"
+        ServiceType: "AWS::Lambda"
+        Host: "*"
+        HTTPMethod: "*"
+        URLPath: "*"
+        Version: 1
+        Attributes: {}
+
+  # ========== APPLICATION INSIGHTS ==========
+  ApplicationInsights:
+    Type: AWS::ApplicationInsights::Application
+    Condition: IsProd
+    Properties:
+      ResourceGroupName: !Sub medhash-${Environment}
+      AutoConfigurationEnabled: true
+      CWEMonitorEnabled: true
+      OpsCenterEnabled: true
+      Tags:
+        - Key: Project
+          Value: MedHash
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+  IsDev: !Equals [!Ref Environment, dev]
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+  CreateAlarms: !Not [!Equals [!Ref AlarmEmail, ""]]
+  EnableXRay: !Equals [!Ref EnableXRay, true]
 
 Outputs:
   ApiEndpoint:
     Description: "API Gateway endpoint URL"
-    Value: !Sub "https://${MedHashApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/"
+    Value: !Sub "https://${MedHashApi}.execute-api.${AWS::Region}.amazonaws.com/${FindInMap[EnvironmentMap, Environment, ApiStageName]}/"
+  
+  PapersTableName:
+    Description: "Papers DynamoDB Table Name"
+    Value: !Ref PapersTable
+  
+  SummariesTableName:
+    Description: "Summaries DynamoDB Table Name"
+    Value: !Ref SummariesTable
+  
+  VerificationsTableName:
+    Description: "Verifications DynamoDB Table Name"
+    Value: !Ref VerificationsTable
+  
+  FetchPubMedFunctionArn:
+    Description: "Fetch PubMed Function ARN"
+    Value: !GetAtt FetchPubMedFunction.Arn
+  
+  GenerateSummaryFunctionArn:
+    Description: "Generate Summary Function ARN"
+    Value: !GetAtt GenerateSummaryFunction.Arn
+  
+  CreateHashFunctionArn:
+    Description: "Create Hash Function ARN"
+    Value: !GetAtt CreateHashFunction.Arn
+  
+  VerifyHashFunctionArn:
+    Description: "Verify Hash Function ARN"
+    Value: !GetAtt VerifyHashFunction.Arn
+  
+  CommonLayerVersionArn:
+    Description: "Common Layer Version ARN"
+    Value: !Ref CommonLayer
+  
+  AlarmTopicArn:
+    Description: "SNS Topic for Alarms"
+    Condition: HasAlarmEmail
+    Value: !Ref AlarmTopic
+  
+  DashboardUrl:
+    Description: "CloudWatch Dashboard URL"
+    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=MedHash-${Environment}"

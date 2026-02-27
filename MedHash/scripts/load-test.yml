@@ -1,0 +1,41 @@
+config:
+  target: "http://localhost:3001"
+  phases:
+    - duration: 60
+      arrivalRate: 5
+      name: "Warm up"
+    - duration: 120
+      arrivalRate: 10
+      rampTo: 20
+      name: "Ramp up load"
+    - duration: 60
+      arrivalRate: 20
+      name: "Peak load"
+  processor: "./load-test-functions.js"
+
+scenarios:
+  - name: "Fetch and summarize paper"
+    flow:
+      - post:
+          url: "/fetch"
+          json:
+            pmid: "12345678"
+          capture:
+            - json: "$.data"
+              as: "paper"
+      
+      - post:
+          url: "/summarize"
+          json:
+            pmid: "12345678"
+          capture:
+            - json: "$.summaryId"
+              as: "summaryId"
+      
+      - post:
+          url: "/hash"
+          json:
+            pmid: "12345678"
+            summaryId: "{{ summaryId }}"
+            title: "{{ paper.title }}"
+            summary: "{{ paper.abstract }}"

@@ -1,0 +1,45 @@
+{
+  "dashboardName": "MedHash-Monitoring",
+  "widgets": [
+    {
+      "type": "metric",
+      "properties": {
+        "metrics": [
+          [ "AWS/Lambda", "Invocations", { "stat": "Sum" } ],
+          [ ".", "Errors", { "stat": "Sum" } ],
+          [ ".", "Duration", { "stat": "Average" } ]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "Lambda Metrics"
+      }
+    },
+    {
+      "type": "metric",
+      "properties": {
+        "metrics": [
+          [ "AWS/Bedrock", "InvocationCount", { "stat": "Sum" } ],
+          [ ".", "InvocationLatency", { "stat": "Average" } ]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "Bedrock Usage"
+      }
+    },
+    {
+      "type": "metric",
+      "properties": {
+        "metrics": [
+          [ "AWS/DynamoDB", "ConsumedReadCapacityUnits", { "stat": "Sum" } ],
+          [ ".", "ConsumedWriteCapacityUnits", { "stat": "Sum" } ]
+        ],
+        "period": 300,
+        "stat": "Sum",
+        "region": "us-east-1",
+        "title": "DynamoDB Capacity"
+      }
+    }
+  ]
+}
