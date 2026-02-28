@@ -1,8 +1,3 @@
-"""
-Generate Summary Function
-Uses Amazon Bedrock to create multi-level summaries
-"""
-
 import json
 import boto3
 import os
@@ -10,7 +5,7 @@ from datetime import datetime
 import hashlib
 import time
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 import traceback
 from aws_lambda_powertools import Logger, Tracer, Metrics
 from aws_lambda_powertools.metrics import MetricUnit
@@ -28,7 +23,7 @@ bedrock = boto3.client('bedrock-runtime')
 # Get environment variables
 papers_table_name = os.environ.get('PAPERS_TABLE', 'medhash-papers-dev')
 summaries_table_name = os.environ.get('SUMMARIES_TABLE', 'medhash-summaries-dev')
-bedrock_model_id = os.environ.get('BEDROCK_MODEL_ID', 'amazon.nova-lite-v1:0')
+bedrock_model_id = os.environ.get('BEDROCK_MODEL_ID', 'apac.amazon.nova-lite-v1:0')  # Updated default
 
 papers_table = dynamodb.Table(papers_table_name)
 summaries_table = dynamodb.Table(summaries_table_name)
@@ -44,20 +39,14 @@ class BedrockSummarizer:
     @tracer.capture_method
     def generate_with_retry(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
         """
-        Generate text with retry logic
-        
-        Args:
-            prompt: Input prompt
-            max_tokens: Maximum tokens in response
-            
-        Returns:
-            Generated text or None
+        Generate text with retry logic using Converse API
         """
         for attempt in range(self.max_retries):
             try:
-                result = self._generate(prompt, max_tokens)
-                metrics.add_metric(name="SuccessfulGeneration", unit=MetricUnit.Count, value=1)
-                return result
+                result = self._generate_converse(prompt, max_tokens)
+                if result:
+                    metrics.add_metric(name="SuccessfulGeneration", unit=MetricUnit.Count, value=1)
+                    return result
             except Exception as e:
                 logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
                 if attempt < self.max_retries - 1:
@@ -66,22 +55,18 @@ class BedrockSummarizer:
                     logger.error(f"All retries failed: {str(e)}")
                     metrics.add_metric(name="FailedGeneration", unit=MetricUnit.Count, value=1)
                     return None
+        return None
     
     @tracer.capture_method
-    def _generate(self, prompt: str, max_tokens: int = 500) -> str:
+    def _generate_converse(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
         """
-        Generate text using Amazon Nova Lite
-        
-        Args:
-            prompt: Input prompt
-            max_tokens: Maximum tokens in response
+        Generate text using Amazon Bedrock Converse API
+        """
+        try:
+            start_time = time.time()
             
-        Returns:
-            Generated text
-        """
-        request_body = {
-            "schemaVersion": "messages",
-            "messages": [
+            # Prepare messages
+            messages = [
                 {
                     "role": "user",
                     "content": [
@@ -90,41 +75,44 @@ class BedrockSummarizer:
                         }
                     ]
                 }
-            ],
-            "inferenceConfig": {
-                "max_new_tokens": max_tokens,
-                "temperature": 0.7,
-                "top_p": 0.9,
-                "stopSequences": []
-            }
-        }
-        
-        try:
-            start_time = time.time()
+            ]
             
-            response = bedrock.invoke_model(
+            inference_config = {
+                "maxTokens": max_tokens,
+                "temperature": 0.7,
+                "topP": 0.9
+            }
+            
+            logger.info(f"Calling Bedrock with model: {self.model_id}")
+            
+            # Call Converse API
+            response = bedrock.converse(
                 modelId=self.model_id,
-                body=json.dumps(request_body)
+                messages=messages,
+                inferenceConfig=inference_config
             )
             
             latency = time.time() - start_time
             metrics.add_metric(name="BedrockLatency", unit=MetricUnit.Seconds, value=latency)
             
-            response_body = json.loads(response['body'].read())
+            # Parse the response correctly
+            if 'output' in response and 'message' in response['output']:
+                message = response['output']['message']
+                if 'content' in message and len(message['content']) > 0:
+                    content_item = message['content'][0]
+                    if 'text' in content_item:
+                        return content_item['text']
             
-            # Extract text from response (Nova format)
-            output = response_body.get('output', {})
-            message = output.get('message', {})
-            content = message.get('content', [])
+            # Try alternative response format
+            if 'results' in response:
+                return response['results'][0].get('outputText', '')
             
-            if content and len(content) > 0:
-                return content[0].get('text', '')
-            
-            return "Summary generation failed - no content in response."
+            logger.error(f"Unexpected response format: {json.dumps(response)}")
+            return None
             
         except Exception as e:
-            logger.error(f"Bedrock API error: {str(e)}")
-            metrics.add_metric(name="BedrockError", unit=MetricUnit.Count, value=1)
+            logger.error(f"Bedrock Converse API error: {str(e)}")
+            logger.error(traceback.format_exc())
             raise
     
     @tracer.capture_method
@@ -139,40 +127,37 @@ Requirements:
 - Exactly 2 sentences
 - First sentence: Main finding/result
 - Second sentence: Clinical significance or implication
-- Use clear, plain language suitable for patients
-- Avoid technical jargon
+- Use clear, plain language
 - Be accurate to the original research
 
 Summary:"""
         
         result = self.generate_with_retry(prompt, 150)
-        return result or "Unable to generate short summary."
+        return result if result else "Unable to generate short summary."
     
     @tracer.capture_method
     def generate_medium_summary(self, abstract: str) -> str:
         """Generate paragraph-length summary"""
-        prompt = f"""Write a clear, professional summary of this medical abstract for healthcare professionals.
+        prompt = f"""Write a clear, professional summary of this medical abstract.
 
 Abstract:
 {abstract}
 
-Format your summary with these sections clearly marked:
-**Objective**: What did the study aim to investigate?
-**Methods**: Brief overview of study design and key methods
-**Results**: Main findings with key data points
-**Conclusion**: Clinical implications
+Format your summary with these sections:
+Objective: What did the study aim to investigate?
+Methods: Brief overview of study design
+Results: Main findings
+Conclusion: Clinical implications
 
 Requirements:
-- One coherent paragraph with clear section markers
-- Include key statistics if available in the abstract
-- Professional tone, but accessible
+- One coherent paragraph
+- Professional tone
 - Approximately 150-200 words
-- Maintain scientific accuracy
 
 Summary:"""
         
         result = self.generate_with_retry(prompt, 300)
-        return result or "Unable to generate medium summary."
+        return result if result else "Unable to generate medium summary."
     
     @tracer.capture_method
     def generate_long_summary(self, abstract: str) -> str:
@@ -182,49 +167,40 @@ Summary:"""
 Abstract:
 {abstract}
 
-Provide a comprehensive summary with the following structure:
+Provide a comprehensive summary with:
 
-## Background and Rationale
-- What gap in knowledge does this address?
+Background and Rationale:
+- What gap does this address?
 - Why was this study needed?
-- What were the researchers' hypotheses?
 
-## Study Design and Methods
-- Study type (RCT, cohort, case-control, etc.)
-- Population characteristics (size, demographics, inclusion/exclusion)
-- Key interventions or exposures
-- Primary and secondary outcomes measured
-- Statistical methods used
+Study Design and Methods:
+- Study type
+- Population characteristics
+- Key interventions
+- Primary outcomes
 
-## Key Results
-- Primary outcome results with effect sizes and confidence intervals
-- Secondary outcomes and subgroup analyses
-- Important negative or null findings
-- Absolute and relative risks if applicable
+Key Results:
+- Main findings with data
+- Secondary outcomes
+- Important negative findings
 
-## Limitations
-- Methodological limitations
-- Generalizability concerns
-- Potential biases
-- Confounding factors not addressed
+Limitations:
+- Methodological concerns
+- Generalizability issues
 
-## Clinical Implications
-- How should this change clinical practice?
-- What questions remain unanswered?
-- Recommendations for implementation
-- Cost-effectiveness considerations (if mentioned)
+Clinical Implications:
+- Practice recommendations
+- Unanswered questions
 
 Requirements:
-- Comprehensive but concise
-- Include specific numbers/statistics from the abstract
-- Critical evaluation where appropriate
+- Include specific statistics
+- Critical evaluation
 - Approximately 400-500 words
-- Use markdown formatting for readability
 
 Analysis:"""
         
         result = self.generate_with_retry(prompt, 600)
-        return result or "Unable to generate detailed summary."
+        return result if result else "Unable to generate detailed summary."
 
 @logger.inject_lambda_context
 @tracer.capture_lambda_handler
@@ -232,13 +208,6 @@ Analysis:"""
 def lambda_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, Any]:
     """
     Main Lambda handler
-    
-    Args:
-        event: Lambda event object
-        context: Lambda context object
-        
-    Returns:
-        API Gateway response
     """
     logger.info(f"Received event: {json.dumps(event)}")
     metrics.add_metric(name="InvocationCount", unit=MetricUnit.Count, value=1)
@@ -263,8 +232,7 @@ def lambda_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, A
                 }
         
         pmid = body.get('pmid')
-        summary_type = body.get('type', 'all')  # short, medium, long, or all
-        regenerate = body.get('regenerate', False)  # Force regeneration
+        summary_type = body.get('type', 'all')
         
         if not pmid:
             return {
@@ -273,47 +241,8 @@ def lambda_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, A
                     'Content-Type': 'application/json',
                     'Access-Control-Allow-Origin': '*'
                 },
-                'body': json.dumps({
-                    'error': 'PMID required',
-                    'message': 'Please provide a PubMed ID'
-                })
+                'body': json.dumps({'error': 'PMID required'})
             }
-        
-        # Check if summaries already exist (unless regenerate is True)
-        if not regenerate:
-            try:
-                existing = summaries_table.query(
-                    IndexName='by-pmid',
-                    KeyConditionExpression='pmid = :pmid',
-                    ExpressionAttributeValues={':pmid': pmid},
-                    Limit=1,
-                    ScanIndexForward=False  # Get most recent first
-                )
-                
-                if existing.get('Items'):
-                    latest = existing['Items'][0]
-                    logger.info(f"Found existing summaries for PMID {pmid}")
-                    return {
-                        'statusCode': 200,
-                        'headers': {
-                            'Content-Type': 'application/json',
-                            'Access-Control-Allow-Origin': '*'
-                        },
-                        'body': json.dumps({
-                            'summaryId': latest['summaryId'],
-                            'pmid': pmid,
-                            'summaries': {
-                                'short': latest.get('short', ''),
-                                'medium': latest.get('medium', ''),
-                                'long': latest.get('long', '')
-                            },
-                            'created_at': latest.get('created_at'),
-                            'cached': True,
-                            'model': latest.get('model')
-                        })
-                    }
-            except Exception as e:
-                logger.warning(f"Error checking existing summaries: {str(e)}")
         
         # Get paper from DynamoDB
         try:
@@ -342,33 +271,27 @@ def lambda_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, A
                     'Content-Type': 'application/json',
                     'Access-Control-Allow-Origin': '*'
                 },
-                'body': json.dumps({
-                    'error': 'Database error',
-                    'message': 'Error accessing paper data'
-                })
+                'body': json.dumps({'error': 'Database error'})
             }
         
-        # Initialize summarizer
+        # Initialize summarizer with correct model ID
         summarizer = BedrockSummarizer()
         
-        # Generate summaries based on requested type
+        # Generate summaries
         summaries = {}
         
         try:
             if summary_type in ['short', 'all']:
                 summaries['short'] = summarizer.generate_short_summary(paper['abstract'])
                 logger.info("Generated short summary")
-                metrics.add_metric(name="ShortSummaryGenerated", unit=MetricUnit.Count, value=1)
             
             if summary_type in ['medium', 'all']:
                 summaries['medium'] = summarizer.generate_medium_summary(paper['abstract'])
                 logger.info("Generated medium summary")
-                metrics.add_metric(name="MediumSummaryGenerated", unit=MetricUnit.Count, value=1)
             
             if summary_type in ['long', 'all']:
                 summaries['long'] = summarizer.generate_long_summary(paper['abstract'])
                 logger.info("Generated long summary")
-                metrics.add_metric(name="LongSummaryGenerated", unit=MetricUnit.Count, value=1)
                 
         except Exception as e:
             logger.error(f"Error generating summaries: {str(e)}")
@@ -381,7 +304,7 @@ def lambda_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, A
                 },
                 'body': json.dumps({
                     'error': 'Summary generation failed',
-                    'message': 'AI service temporarily unavailable'
+                    'message': f'AI service error: {str(e)}'
                 })
             }
         
@@ -398,8 +321,7 @@ def lambda_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, A
             'long': summaries.get('long', ''),
             'created_at': datetime.utcnow().isoformat(),
             'model': bedrock_model_id,
-            'summary_type': summary_type,
-            'paper_title': paper.get('title', '')
+            'summary_type': summary_type
         }
         
         # Store in DynamoDB
@@ -408,17 +330,6 @@ def lambda_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, A
             logger.info(f"Stored summary {summary_id}")
         except Exception as e:
             logger.error(f"Error storing summary: {str(e)}")
-            # Continue even if storage fails
-        
-        # Prepare response
-        response_data = {
-            'summaryId': summary_id,
-            'pmid': pmid,
-            'summaries': summaries,
-            'created_at': summary_record['created_at'],
-            'cached': False,
-            'model': bedrock_model_id
-        }
         
         return {
             'statusCode': 200,
@@ -426,21 +337,24 @@ def lambda_handler(event: Dict[str, Any], context: LambdaContext) -> Dict[str, A
                 'Content-Type': 'application/json',
                 'Access-Control-Allow-Origin': '*'
             },
-            'body': json.dumps(response_data)
+            'body': json.dumps({
+                'summaryId': summary_id,
+                'pmid': pmid,
+                'summaries': summaries,
+                'created_at': summary_record['created_at'],
+                'cached': False,
+                'model': bedrock_model_id
+            })
         }
         
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         logger.error(traceback.format_exc())
-        metrics.add_metric(name="UnhandledError", unit=MetricUnit.Count, value=1)
         return {
             'statusCode': 500,
             'headers': {
                 'Content-Type': 'application/json',
                 'Access-Control-Allow-Origin': '*'
             },
-            'body': json.dumps({
-                'error': 'Internal server error',
-                'message': 'An unexpected error occurred'
-            })
+            'body': json.dumps({'error': 'Internal server error'})
         }

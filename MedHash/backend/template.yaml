@@ -36,12 +36,13 @@ Parameters:
   
   BedrockModelId:
     Type: String
-    Default: amazon.nova-lite-v1:0
+    Default: amazon.nova-2-lite-v1:0
     Description: Bedrock model ID for summaries
     AllowedValues:
-      - amazon.nova-lite-v1:0
+      - amazon.nova-2-lite-v1:0
+      - amazon.nova-pro-v1:0
       - amazon.nova-micro-v1:0
-      - anthropic.claude-3-haiku-20240307-v1:0
+      - amazon.nova-lite-v1:0
 
   LogRetentionDays:
     Type: Number
@@ -101,6 +102,14 @@ Mappings:
       ApiStageName: prod
       ApiThrottleRate: 100
       ApiThrottleBurst: 200
+
+# ========== CONDITIONS - MOVED UP HERE ==========
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+  IsDev: !Equals [!Ref Environment, dev]
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
+  CreateAlarms: !Not [!Equals [!Ref AlarmEmail, ""]]
+  EnableXRay: !Equals [!Ref EnableXRay, true]
 
 Resources:
   # ========== LAMBDA LAYERS ==========
@@ -255,7 +264,6 @@ Resources:
       Description: Fetches paper metadata and abstracts from PubMed API
       CodeUri: functions/fetch-pubmed/
       Handler: app.lambda_handler
-      ReservedConcurrentExecutions: !FindInMap [EnvironmentMap, !Ref Environment, LambdaReservedConcurrency]
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref PapersTable
@@ -293,7 +301,6 @@ Resources:
       Description: Generates AI-powered summaries using Amazon Bedrock
       CodeUri: functions/generate-summary/
       Handler: app.lambda_handler
-      ReservedConcurrentExecutions: !FindInMap [EnvironmentMap, !Ref Environment, LambdaReservedConcurrency]
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref PapersTable
@@ -338,7 +345,6 @@ Resources:
       Description: Creates SHA-256 hash for blockchain verification
       CodeUri: functions/create-hash/
       Handler: app.lambda_handler
-      ReservedConcurrentExecutions: !FindInMap [EnvironmentMap, !Ref Environment, LambdaReservedConcurrency]
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref PapersTable
@@ -377,9 +383,8 @@ Resources:
       Description: Verifies and retrieves hash records
       CodeUri: functions/verify-hash/
       Handler: app.lambda_handler
-      ReservedConcurrentExecutions: !FindInMap [EnvironmentMap, !Ref Environment, LambdaReservedConcurrency]
       Policies:
-        - DynamoDBReadPolicy:
+        - DynamoDBCrudPolicy:  # Change from DynamoDBReadPolicy to DynamoDBCrudPolicy
             TableName: !Ref VerificationsTable
         - Statement:
             - Effect: Allow
@@ -423,14 +428,6 @@ Resources:
         AddDefaultAuthorizerToCorsPreflight: false
       EndpointConfiguration:
         Type: REGIONAL
-      MethodSettings:
-        - LoggingLevel: INFO
-          MetricsEnabled: true
-          DataTraceEnabled: !If [IsProd, false, true]
-          ResourcePath: "/*"
-          HttpMethod: "*"
-          ThrottlingRateLimit: !FindInMap [EnvironmentMap, !Ref Environment, ApiThrottleRate]
-          ThrottlingBurstLimit: !FindInMap [EnvironmentMap, !Ref Environment, ApiThrottleBurst]
       Tags:
         Project: MedHash
         Environment: !Ref Environment
@@ -556,17 +553,10 @@ Resources:
         - Key: Project
           Value: MedHash
 
-Conditions:
-  IsProd: !Equals [!Ref Environment, prod]
-  IsDev: !Equals [!Ref Environment, dev]
-  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, ""]]
-  CreateAlarms: !Not [!Equals [!Ref AlarmEmail, ""]]
-  EnableXRay: !Equals [!Ref EnableXRay, true]
-
 Outputs:
   ApiEndpoint:
     Description: "API Gateway endpoint URL"
-    Value: !Sub "https://${MedHashApi}.execute-api.${AWS::Region}.amazonaws.com/${FindInMap[EnvironmentMap, Environment, ApiStageName]}/"
+    Value: !Sub "https://${MedHashApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/"
   
   PapersTableName:
     Description: "Papers DynamoDB Table Name"
@@ -595,16 +585,3 @@ Outputs:
   VerifyHashFunctionArn:
     Description: "Verify Hash Function ARN"
     Value: !GetAtt VerifyHashFunction.Arn
-  
-  CommonLayerVersionArn:
-    Description: "Common Layer Version ARN"
-    Value: !Ref CommonLayer
-  
-  AlarmTopicArn:
-    Description: "SNS Topic for Alarms"
-    Condition: HasAlarmEmail
-    Value: !Ref AlarmTopic
-  
-  DashboardUrl:
-    Description: "CloudWatch Dashboard URL"
-    Value: !Sub "https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=MedHash-${Environment}"
