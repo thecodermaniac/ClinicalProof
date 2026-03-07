@@ -36,10 +36,10 @@ Parameters:
   
   BedrockModelId:
     Type: String
-    Default: amazon.nova-2-lite-v1:0
+    Default: apac.amazon.nova-lite-v1:0
     Description: Bedrock model ID for summaries
     AllowedValues:
-      - amazon.nova-2-lite-v1:0
+      - apac.amazon.nova-lite-v1:0
       - amazon.nova-pro-v1:0
       - amazon.nova-micro-v1:0
       - amazon.nova-lite-v1:0
@@ -409,6 +409,63 @@ Resources:
         Project: MedHash
         Function: VerifyHash
         Environment: !Ref Environment
+
+  ListSummariesFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medhash-list-summaries-${Environment}
+      Description: Lists all summaries with pagination
+      CodeUri: functions/list-summaries/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref SummariesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref VerificationsTable
+      Environment:
+        Variables:
+          SUMMARIES_TABLE: !Ref SummariesTable
+          VERIFICATIONS_TABLE: !Ref VerificationsTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /summaries
+            Method: get
+            RestApiId: !Ref MedHashApi
+      Tags:
+        Project: MedHash
+        Function: ListSummaries
+
+  GetSummaryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub medhash-get-summary-${Environment}
+      Description: Gets a specific summary by ID
+      CodeUri: functions/get-summary/
+      Handler: app.lambda_handler
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref SummariesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref PapersTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref VerificationsTable
+      Environment:
+        Variables:
+          SUMMARIES_TABLE: !Ref SummariesTable
+          PAPERS_TABLE: !Ref PapersTable
+          VERIFICATIONS_TABLE: !Ref VerificationsTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /summaries/{summaryId}
+            Method: get
+            RestApiId: !Ref MedHashApi
+      Tags:
+        Project: MedHash
+        Function: GetSummary 
 
   # ========== API GATEWAY ==========
   MedHashApi:
