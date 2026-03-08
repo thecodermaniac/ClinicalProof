@@ -1,5 +1,6 @@
+
 const nextConfig = {
-  output: 'standalone',  // Change from 'export' to 'standalone'
+  // Remove output: 'standalone' or 'export' - let Amplify handle it
   images: {
     unoptimized: true,
   },
