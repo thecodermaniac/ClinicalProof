@@ -106,10 +106,10 @@ export default function SummariesPage() {
                 placeholder="Filter by PMID or content..."
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 text-sm  text-gray-700"
               />
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 text-sm text-gray-600">
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value as 'newest' | 'oldest')}

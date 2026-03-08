@@ -40,9 +40,9 @@ export default function Home() {
       setBlockchainStatus({ verifying: false });
     } catch (error: any) {
       console.error('Failed to connect wallet:', error);
-      setBlockchainStatus({ 
-        verifying: false, 
-        error: error.message || 'Failed to connect wallet' 
+      setBlockchainStatus({
+        verifying: false,
+        error: error.message || 'Failed to connect wallet'
       });
       alert(error.message || 'Please install MetaMask to use blockchain features');
     }
@@ -53,11 +53,11 @@ export default function Home() {
     try {
       const paperData = await apiClient.fetchPaper(pmid);
       setPaper(paperData);
-      
+
       const summaryData = await apiClient.generateSummary(pmid, 'all');
       setSummaries(summaryData.summaries);
       setSummaryId(summaryData.summaryId);
-      
+
     } catch (error: any) {
       console.error('Error:', error);
       alert(error.message || 'Failed to fetch paper. Please try again.');
@@ -81,12 +81,12 @@ export default function Home() {
         summary: summaries.medium || summaries.patient,
         storeOnChain: false
       });
-      
+
       setHash(hashData.hash);
-      
+
       // Show success modal
       setShowSuccessModal(true);
-      
+
     } catch (error: any) {
       console.error('Hash creation error:', error);
       alert(error.message || 'Failed to create hash');
@@ -96,74 +96,75 @@ export default function Home() {
   };
 
   const handleBlockchainVerify = async () => {
-  if (!walletConnected) {
-    try {
-      await connectWallet();
-    } catch (error: any) {
-      setBlockchainStatus({
-        verifying: false,
-        error: error.message || 'Failed to connect wallet'
-      });
-      return;
-    }
-  }
-  
-  if (!paper || !hash) {
-    alert('Please create a hash first');
-    return;
-  }
-
-  setBlockchainStatus({ verifying: true });
-  
-  try {
-    // First verify with Lambda (off-chain)
-    const lambdaVerification = await apiClient.verifyHash(hash);
-    
-    if (!lambdaVerification.verified) {
-      throw new Error('Hash not found in database');
-    }
-    
-    // Store on blockchain with retry logic
-    const result = await blockchainService.storeProof(
-      paper.pmid,
-      'patient',
-      hash
-    );
-    
-    setBlockchainStatus({
-      verifying: false,
-      result: {
-        success: true,
-        message: '✅ Proof stored on blockchain successfully!',
-        txHash: result.txHash,
-        blockNumber: result.blockNumber,
-        timestamp: result.timestamp
-      }
-    });
-    
-  } catch (error: any) {
-    console.error('Blockchain error:', error);
-    
-    // Show detailed error to user
-    setBlockchainStatus({
-      verifying: false,
-      error: error.message || 'Transaction failed. Check console for details.'
-    });
-  }
-};
-
-  const handleCheckBlockchain = async () => {
     if (!walletConnected) {
-      await connectWallet();
+      try {
+        await connectWallet();
+      } catch (error: any) {
+        setBlockchainStatus({
+          verifying: false,
+          error: error.message || 'Failed to connect wallet'
+        });
+        return;
+      }
     }
-    
+
     if (!paper || !hash) {
       alert('Please create a hash first');
       return;
     }
 
     setBlockchainStatus({ verifying: true });
-    
+
+    try {
+      // First verify with Lambda (off-chain)
+      const lambdaVerification = await apiClient.verifyHash(hash);
+
+      if (!lambdaVerification.verified) {
+        throw new Error('Hash not found in database');
+      }
+
+      // Store on blockchain with retry logic
+      const result = await blockchainService.storeProof(
+        paper.pmid,
+        'patient',
+        hash
+      );
+
+      setBlockchainStatus({
+        verifying: false,
+        result: {
+          success: true,
+          message: '✅ Proof stored on blockchain successfully!',
+          txHash: result.txHash,           // This is the transaction hash (e37d5f2d...)
+          proofHash: hash,                  // This is your proof hash (368e90ab...)
+          blockNumber: result.blockNumber,
+          timestamp: result.timestamp
+        }
+      });
+
+    } catch (error: any) {
+      console.error('Blockchain error:', error);
+
+      // Show detailed error to user
+      setBlockchainStatus({
+        verifying: false,
+        error: error.message || 'Transaction failed. Check console for details.'
+      });
+    }
+  };
+
+  const handleCheckBlockchain = async () => {
+    if (!walletConnected) {
+      await connectWallet();
+    }
+
+    if (!paper || !hash) {
+      alert('Please create a hash first');
+      return;
+    }
+
+    setBlockchainStatus({ verifying: true });
+
     try {
       const summaryType = 'patient';
       const result = await blockchainService.verifyProof(
@@ -171,7 +172,7 @@ export default function Home() {
         summaryType,
         hash
       );
-      
+
       if (result.verified) {
         setBlockchainStatus({
           verifying: false,
@@ -213,7 +214,7 @@ export default function Home() {
             Your summary has been created successfully and saved to your library.
           </p>
         </div>
-        
+
         <div className="space-y-3">
           <Link
             href={`/summaries/${summaryId}`}
@@ -222,7 +223,7 @@ export default function Home() {
           >
             🔍 View This Summary
           </Link>
-          
+
           <Link
             href="/summaries"
             className="block w-full px-4 py-3 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-center font-medium"
@@ -230,7 +231,7 @@ export default function Home() {
           >
             📚 Go to My Summaries
           </Link>
-          
+
           <button
             onClick={() => setShowSuccessModal(false)}
             className="block w-full px-4 py-3 text-gray-500 hover:text-gray-700 text-center"
@@ -255,14 +256,14 @@ export default function Home() {
                 MedHash
               </Link>
               <nav className="hidden md:flex gap-4">
-                <Link 
-                  href="/" 
+                <Link
+                  href="/"
                   className="text-blue-600 bg-blue-50 px-3 py-2 rounded-lg font-medium"
                 >
                   Home
                 </Link>
-                <Link 
-                  href="/summaries" 
+                <Link
+                  href="/summaries"
                   className="text-gray-600 hover:text-blue-600 px-3 py-2 rounded-lg transition-colors"
                 >
                   My Summaries
@@ -276,7 +277,7 @@ export default function Home() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
                 </svg>
               </button>
-              
+
               {!walletConnected ? (
                 <button
                   onClick={connectWallet}
@@ -297,17 +298,17 @@ export default function Home() {
               )}
             </div>
           </div>
-          
+
           {/* Mobile Navigation */}
           <div className="md:hidden mt-4 flex gap-2">
-            <Link 
-              href="/" 
+            <Link
+              href="/"
               className="flex-1 text-center px-3 py-2 bg-blue-600 text-white rounded-lg text-sm"
             >
               Home
             </Link>
-            <Link 
-              href="/summaries" 
+            <Link
+              href="/summaries"
               className="flex-1 text-center px-3 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm"
             >
               My Summaries
@@ -363,7 +364,7 @@ export default function Home() {
               summaries && (
                 <>
                   <SummaryTabs summaries={summaries} />
-                  
+
                   <div className="flex flex-col gap-4 max-w-2xl mx-auto">
                     <button
                       onClick={handleCreateHash}
@@ -377,7 +378,7 @@ export default function Home() {
                       <div className="space-y-3">
                         <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                           <p className="text-green-800 font-semibold mb-2">✅ Hash Generated</p>
-                          <p className="font-mono text-sm break-all bg-white p-2 rounded border">
+                          <p className="font-mono text-sm break-all bg-white p-2 rounded border text-gray-700">
                             {hash}
                           </p>
                         </div>
@@ -410,24 +411,55 @@ export default function Home() {
                     )}
 
                     {blockchainStatus.result && (
-                      <div className={`mt-4 p-4 rounded-lg border ${
-                        blockchainStatus.result.success 
-                          ? 'bg-green-50 border-green-200' 
-                          : 'bg-yellow-50 border-yellow-200'
-                      }`}>
-                        <p className={`font-semibold mb-2 ${
-                          blockchainStatus.result.success ? 'text-green-800' : 'text-yellow-800'
+                      <div className={`mt-4 p-4 rounded-lg border ${blockchainStatus.result.success
+                        ? 'bg-green-50 border-green-200'
+                        : 'bg-yellow-50 border-yellow-200'
                         }`}>
+
+                        <p className={`font-semibold mb-2 ${blockchainStatus.result.success ? 'text-green-800' : 'text-yellow-800'
+                          }`}>
                           {blockchainStatus.result.message}
                         </p>
+
+                        {/* Show Transaction Hash with Etherscan Link */}
                         {blockchainStatus.result.txHash && (
-                          <p className="text-sm text-gray-600 break-all">
-                            <span className="font-medium">Transaction:</span> {blockchainStatus.result.txHash}
+                          <div className="mt-3 p-3 bg-white rounded border">
+                            <p className="text-xs text-gray-500 mb-1">Transaction Hash:</p>
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="font-mono text-xs break-all text-gray-700">
+                                {blockchainStatus.result.txHash}
+                              </p>
+                              <a
+                                href={`https://sepolia.etherscan.io/tx/${blockchainStatus.result.txHash}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex-shrink-0 px-2 py-1 bg-blue-50 text-blue-600 rounded hover:bg-blue-100 text-xs font-medium"
+                              >
+                                View →
+                              </a>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Show Proof Hash (optional) */}
+                        {blockchainStatus.result.proofHash && (
+                          <div className="mt-2 p-3 bg-gray-50 rounded border">
+                            <p className="text-xs text-gray-500 mb-1">Proof Hash (stored):</p>
+                            <p className="font-mono text-xs break-all text-gray-600">
+                              {blockchainStatus.result.proofHash}
+                            </p>
+                          </div>
+                        )}
+
+                        {blockchainStatus.result.timestamp && (
+                          <p className="text-sm text-gray-600 mt-2">
+                            <span className="font-medium">Confirmed:</span> {blockchainStatus.result.timestamp}
                           </p>
                         )}
-                        {blockchainStatus.result.timestamp && (
+
+                        {blockchainStatus.result.blockNumber && (
                           <p className="text-sm text-gray-600">
-                            <span className="font-medium">Timestamp:</span> {blockchainStatus.result.timestamp}
+                            <span className="font-medium">Block:</span> {blockchainStatus.result.blockNumber}
                           </p>
                         )}
                       </div>

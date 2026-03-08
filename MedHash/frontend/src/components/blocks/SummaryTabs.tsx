@@ -14,9 +14,9 @@ export default function SummaryTabs({ summaries }: SummaryTabsProps) {
   const [activeTab, setActiveTab] = useState<'short' | 'medium' | 'long'>('medium');
   
   const tabs = [
-    { id: 'short', label: '⚡ Quick (2 min)', icon: '⚡' },
-    { id: 'medium', label: '📋 Standard (5 min)', icon: '📋' },
-    { id: 'long', label: '🔍 Detailed (10 min)', icon: '🔍' }
+    { id: 'short', label: 'Quick (2 min)', icon: '⚡' },
+    { id: 'medium', label: 'Standard (5 min)', icon: '📋' },
+    { id: 'long', label: 'Detailed (10 min)', icon: '🔍' }
   ];
 
   const copyToClipboard = (text: string) => {

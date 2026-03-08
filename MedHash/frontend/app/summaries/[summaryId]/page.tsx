@@ -24,9 +24,10 @@ interface SummaryDetail {
     doi: string;
   };
   blockchain?: {
-    hash: string;
+    hash: string;              // This is the proof hash (stored in contract)
     verified_at: string;
     verification_count: number;
+    // Note: txHash is NOT returned by Lambda
   };
 }
 
@@ -156,31 +157,33 @@ export default function SummaryDetailPage() {
               <span>✅</span>
               <span>Verified on Blockchain</span>
             </div>
-            <div className="grid grid-cols-2 gap-4 text-sm">
+
+            {/* Proof Hash (stored in contract) */}
+            <div className="mb-3">
+              <p className="text-xs text-gray-500 mb-1">Proof Hash (stored in contract):</p>
+              <p className="font-mono text-black text-xs break-all bg-white p-2 rounded border">
+                {detail.blockchain.hash}
+              </p>
+            </div>
+
+            {/* Verification details */}
+            <div className="grid grid-cols-2 gap-4 text-sm mt-3 pt-3 border-t border-green-200">
               <div>
-                <span className="text-gray-600">Transaction Hash:</span>
-                <p className="font-mono text-xs break-all mt-1">
-                  {detail.blockchain.hash}
-                </p>
-              </div>
-              <div>
-                <span className="text-gray-600">Verified:</span>
-                <p className="mt-1">
+                <p className="text-gray-600">Verified:</p>
+                <p className="font-medium">
                   {format(new Date(detail.blockchain.verified_at), 'PPpp')}
                 </p>
-                <p className="text-xs text-gray-500 mt-1">
-                  Verified {detail.blockchain.verification_count} times
-                </p>
+              </div>
+              <div>
+                <p className="text-gray-600">Verifications:</p>
+                <p className="font-medium">{detail.blockchain.verification_count}</p>
               </div>
             </div>
-            <a
-              href={`https://sepolia.etherscan.io/tx/${detail.blockchain.hash}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-block mt-3 text-sm text-blue-600 hover:underline"
-            >
-              View on Etherscan →
-            </a>
+
+            {/* Note about transaction hash */}
+            <p className="text-xs text-gray-400 mt-3 italic">
+              Note: The transaction hash can be found in MetaMask activity or your wallet history.
+            </p>
           </div>
         )}
 
@@ -207,7 +210,7 @@ export default function SummaryDetailPage() {
           </div>
 
           <div className="p-6">
-            <div className="prose max-w-none">
+            <div className="prose max-w-none text-gray-800">
               {tabs.find(t => t.id === activeTab)?.content.split('\n').map((line, i) => {
                 if (line.startsWith('##')) {
                   return <h3 key={i} className="text-lg font-bold mt-4 mb-2">{line.replace(/^##\s*/, '')}</h3>;
