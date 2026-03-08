@@ -1,244 +1,200 @@
-import { BrowserProvider, Contract, formatEther, keccak256, toUtf8Bytes } from 'ethers';
+import { BrowserProvider, Contract, JsonRpcProvider, keccak256, toUtf8Bytes } from 'ethers';
 import MedHashABI from './MedHashABI.json';
 
-// Get contract address from environment
 const CONTRACT_ADDRESS = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS;
+const INFURA_KEY = process.env.NEXT_PUBLIC_INFURA_API_KEY;
+const INFURA_URL = `https://sepolia.infura.io/v3/${INFURA_KEY}`;
 
-export interface Proof {
-  hash: string;
-  timestamp: number;
-  pmid: string;
-  summaryType: string;
-}
-
-export interface TransactionReceipt {
-  success: boolean;
-  txHash: string;
-  blockNumber: number;
-  timestamp: string;
-  gasUsed?: string;
-}
+console.log('🔧 Blockchain Config:', {
+  contractAddress: CONTRACT_ADDRESS,
+  infuraUrl: INFURA_URL,
+  networkId: process.env.NEXT_PUBLIC_NETWORK_ID
+});
 
 export class BlockchainService {
   private provider: BrowserProvider | null = null;
   private contract: Contract | null = null;
   private signerAddress: string = '';
-  private chainId: number | null = null;
-
-  constructor() {
-    if (typeof window !== 'undefined' && window.ethereum) {
-      this.provider = new BrowserProvider(window.ethereum);
-    }
-  }
 
   async connect(): Promise<string> {
     try {
-      if (!window.ethereum) {
-        throw new Error('Please install MetaMask to use blockchain features');
-      }
+      if (!window.ethereum) throw new Error('Please install MetaMask');
       
-      if (!this.provider) {
-        this.provider = new BrowserProvider(window.ethereum);
-      }
-
-      // Request accounts
-      const accounts = await window.ethereum.request({ 
-        method: 'eth_requestAccounts' 
-      });
-      
+      this.provider = new BrowserProvider(window.ethereum);
       const signer = await this.provider.getSigner();
       this.signerAddress = await signer.getAddress();
       
-      // Get network
       const network = await this.provider.getNetwork();
-      this.chainId = Number(network.chainId);
+      console.log('🌐 Connected to network:', {
+        chainId: Number(network.chainId),
+        name: network.name
+      });
       
-      // Check if we're on the right network
-      const expectedChainId = parseInt(process.env.NEXT_PUBLIC_NETWORK_ID || '31337');
-      if (this.chainId !== expectedChainId) {
-        console.warn(`Connected to chain ID ${this.chainId}, expected ${expectedChainId}`);
-        // You might want to prompt network switch here
+      if (Number(network.chainId) !== 11155111) {
+        throw new Error(`Wrong network! Please switch to Sepolia (current: ${Number(network.chainId)})`);
       }
       
-      // Initialize contract
-      this.contract = new Contract(CONTRACT_ADDRESS, MedHashABI.abi, signer);
+      console.log('📝 Using contract at:', CONTRACT_ADDRESS);
       
-      // Listen for account changes
-      window.ethereum.on('accountsChanged', (accounts: string[]) => {
-        if (accounts.length === 0) {
-          this.disconnect();
-        } else {
-          this.signerAddress = accounts[0];
-        }
-      });
-
-      // Listen for chain changes
-      window.ethereum.on('chainChanged', () => {
-        window.location.reload();
-      });
+      // Verify contract exists
+      const code = await this.provider.getCode(CONTRACT_ADDRESS!);
+      if (code === '0x') {
+        throw new Error(`No contract found at address ${CONTRACT_ADDRESS}`);
+      }
+      console.log('✅ Contract verified, code length:', code.length);
+      
+      this.contract = new Contract(CONTRACT_ADDRESS!, MedHashABI.abi, signer);
       
       return this.signerAddress;
-    } catch (error) {
-      console.error('Connection error:', error);
+    } catch (error: any) {
+      console.error('❌ Connection failed:', {
+        message: error.message,
+        code: error.code,
+        stack: error.stack
+      });
       throw error;
     }
   }
 
-  async switchToLocalNetwork() {
+  async storeProof(pmid: string, summaryType: string, summaryHash: string) {
     try {
-      await window.ethereum.request({
-        method: 'wallet_addEthereumChain',
-        params: [{
-          chainId: '0x7A69', // 31337 in hex
-          chainName: 'Hardhat Local',
-          nativeCurrency: {
-            name: 'ETH',
-            symbol: 'ETH',
-            decimals: 18
-          },
-          rpcUrls: ['http://127.0.0.1:8545'],
-        }],
+      if (!this.contract) await this.connect();
+
+      console.log('📦 Storing proof:', { pmid, summaryType, summaryHash });
+
+      // First check if proof already exists using public provider
+      try {
+        const publicProvider = new JsonRpcProvider(INFURA_URL);
+        const readContract = new Contract(CONTRACT_ADDRESS!, MedHashABI.abi, publicProvider);
+        const exists = await readContract.verifyProof(pmid, summaryType, summaryHash);
+        console.log('🔍 Pre-verify check:', { exists: exists[0], timestamp: exists[1] });
+        
+        if (exists[0]) {
+          throw new Error('This proof already exists on blockchain');
+        }
+      } catch (verifyError: any) {
+        console.log('Pre-verify check failed (continuing anyway):', verifyError.message);
+      }
+
+      // Get the signer's address for logging
+      const signer = await this.contract!.runner.getAddress();
+      console.log('👤 Signer address:', signer);
+
+      // Check balance
+      const balance = await this.provider!.getBalance(signer);
+      console.log('💰 Signer balance:', balance.toString(), 'wei');
+
+      if (balance === 0n) {
+        throw new Error('Insufficient balance. Get Sepolia ETH from a faucet.');
+      }
+
+      // Estimate gas first
+      let gasEstimate;
+      try {
+        gasEstimate = await this.contract!.storeProof.estimateGas(pmid, summaryType, summaryHash);
+        console.log('⛽ Estimated gas:', gasEstimate.toString());
+      } catch (estimateError: any) {
+        console.error('Gas estimation failed:', {
+          message: estimateError.message,
+          data: estimateError.data,
+          transaction: estimateError.transaction
+        });
+        // Use default gas limit
+        gasEstimate = 500000n;
+      }
+
+      // Send transaction with explicit gas limit
+      const tx = await this.contract!.storeProof(pmid, summaryType, summaryHash, {
+        gasLimit: gasEstimate * 120n / 100n, // Add 20% buffer
       });
-    } catch (error) {
-      console.error('Failed to switch network:', error);
-    }
-  }
-
-  // ... rest of the methods remain the same ...
-  calculateContractHash(pmid: string, summaryType: string, summaryHash: string): string {
-    const message = pmid + summaryType + summaryHash;
-    return keccak256(toUtf8Bytes(message));
-  }
-
-  async storeProof(pmid: string, summaryType: string, summaryHash: string): Promise<TransactionReceipt> {
-    try {
-      if (!this.contract) {
-        await this.connect();
-      }
       
-      if (!this.contract) {
-        throw new Error('Contract not initialized');
-      }
-
-      console.log('Storing proof on blockchain:', { pmid, summaryType, summaryHash });
+      console.log('✍️ Transaction sent:', {
+        hash: tx.hash,
+        to: tx.to,
+        from: tx.from,
+        data: tx.data.substring(0, 66) + '...' // Log first part of data
+      });
       
-      const tx = await this.contract.storeProof(pmid, summaryType, summaryHash);
-      const receipt = await tx.wait();
+      // Wait for confirmation with timeout
+      const receipt = await Promise.race([
+        tx.wait(),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Transaction confirmation timeout after 60 seconds')), 60000)
+        )
+      ]);
+      
+      console.log('✅ Transaction confirmed:', {
+        hash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed?.toString()
+      });
       
       return {
         success: true,
         txHash: receipt.hash,
         blockNumber: receipt.blockNumber,
-        timestamp: new Date().toISOString(),
-        gasUsed: receipt.gasUsed?.toString()
+        timestamp: new Date().toISOString()
       };
+      
     } catch (error: any) {
-      console.error('Store error:', error);
-      if (error.message?.includes('Proof already exists')) {
-        throw new Error('This proof has already been stored on the blockchain');
+      // Detailed error logging
+      console.error('❌ Store proof failed - DETAILS:', {
+        name: error.name,
+        message: error.message,
+        code: error.code,
+        data: error.data,
+        transaction: error.transaction ? {
+          to: error.transaction.to,
+          from: error.transaction.from,
+          data: error.transaction.data?.substring(0, 66)
+        } : null,
+        shortMessage: error.shortMessage,
+        stack: error.stack,
+        error: JSON.stringify(error, Object.getOwnPropertyNames(error))
+      });
+
+      // User-friendly error messages
+      if (error.message?.includes('insufficient funds')) {
+        throw new Error('Insufficient Sepolia ETH for gas. Get free test ETH from a faucet.');
       }
+      if (error.message?.includes('nonce')) {
+        throw new Error('Transaction nonce error. Reset your MetaMask account (Settings > Advanced > Clear activity tab data)');
+      }
+      if (error.message?.includes('already known')) {
+        throw new Error('Transaction is already pending. Check MetaMask.');
+      }
+      if (error.code === 'CALL_EXCEPTION') {
+        throw new Error('Contract execution failed. The transaction was reverted by the contract.');
+      }
+      
       throw error;
     }
   }
 
-  async verifyProof(pmid: string, summaryType: string, summaryHash: string): Promise<{
-    verified: boolean;
-    timestamp: number | null;
-    proof?: Proof;
-  }> {
+  async verifyProof(pmid: string, summaryType: string, summaryHash: string) {
     try {
-      if (!this.contract) {
-        await this.connect();
-      }
+      const provider = new JsonRpcProvider(INFURA_URL);
+      const contract = new Contract(CONTRACT_ADDRESS!, MedHashABI.abi, provider);
       
-      if (!this.contract) {
-        throw new Error('Contract not initialized');
-      }
-      
-      const result = await this.contract.verifyProof(pmid, summaryType, summaryHash);
-      
-      const exists = result[0];
-      const timestamp = result[1] ? Number(result[1]) : null;
-      
-      let proof: Proof | undefined;
-      
-      if (exists && timestamp) {
-        const key = this.calculateContractHash(pmid, summaryType, summaryHash);
-        proof = {
-          hash: key,
-          timestamp,
-          pmid,
-          summaryType
-        };
-      }
+      const result = await contract.verifyProof(pmid, summaryType, summaryHash);
       
       return {
-        verified: exists,
-        timestamp,
-        proof
+        verified: result[0],
+        timestamp: result[1] ? Number(result[1]) : null
       };
-    } catch (error) {
-      console.error('Verify error:', error);
-      throw error;
-    }
-  }
-
-  async getPaperProofs(pmid: string): Promise<Proof[]> {
-    try {
-      if (!this.contract) {
-        await this.connect();
-      }
-      
-      if (!this.contract) {
-        throw new Error('Contract not initialized');
-      }
-      
-      const proofHashes = await this.contract.getPaperProofs(pmid);
-      
-      const proofs: Proof[] = [];
-      
-      for (const hash of proofHashes) {
-        const proof = await this.contract.proofs(hash);
-        proofs.push({
-          hash,
-          timestamp: Number(proof.timestamp),
-          pmid: proof.pmid,
-          summaryType: proof.summaryType
-        });
-      }
-      
-      return proofs;
-    } catch (error) {
-      console.error('Get proofs error:', error);
+    } catch (error: any) {
+      console.error('❌ Verify failed:', error);
       throw error;
     }
   }
 
   isConnected(): boolean {
-    return this.contract !== null && this.signerAddress !== '';
+    return this.contract !== null;
   }
 
   getSignerAddress(): string {
     return this.signerAddress;
   }
-
-  getChainId(): number | null {
-    return this.chainId;
-  }
-
-  async getBalance(): Promise<string> {
-    if (!this.provider || !this.signerAddress) {
-      return '0';
-    }
-    const balance = await this.provider.getBalance(this.signerAddress);
-    return formatEther(balance);
-  }
 }
 
 export const blockchainService = new BlockchainService();
-
-declare global {
-  interface Window {
-    ethereum?: any;
-  }
-}

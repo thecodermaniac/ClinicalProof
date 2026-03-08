@@ -96,47 +96,61 @@ export default function Home() {
   };
 
   const handleBlockchainVerify = async () => {
-    if (!walletConnected) {
+  if (!walletConnected) {
+    try {
       await connectWallet();
-    }
-    
-    if (!paper || !hash) {
-      alert('Please create a hash first');
+    } catch (error: any) {
+      setBlockchainStatus({
+        verifying: false,
+        error: error.message || 'Failed to connect wallet'
+      });
       return;
     }
+  }
+  
+  if (!paper || !hash) {
+    alert('Please create a hash first');
+    return;
+  }
 
-    setBlockchainStatus({ verifying: true });
+  setBlockchainStatus({ verifying: true });
+  
+  try {
+    // First verify with Lambda (off-chain)
+    const lambdaVerification = await apiClient.verifyHash(hash);
     
-    try {
-      const lambdaVerification = await apiClient.verifyHash(hash);
-      
-      if (!lambdaVerification.verified) {
-        throw new Error('Hash not found in database');
-      }
-      
-      const summaryType = 'patient';
-      const result = await blockchainService.storeProof(
-        paper.pmid,
-        summaryType,
-        hash
-      );
-      
-      setBlockchainStatus({
-        verifying: false,
-        result: {
-          ...result,
-          message: '✅ Proof stored on blockchain successfully!'
-        }
-      });
-      
-    } catch (error: any) {
-      console.error('Blockchain verification error:', error);
-      setBlockchainStatus({
-        verifying: false,
-        error: error.message || 'Failed to verify on blockchain'
-      });
+    if (!lambdaVerification.verified) {
+      throw new Error('Hash not found in database');
     }
-  };
+    
+    // Store on blockchain with retry logic
+    const result = await blockchainService.storeProof(
+      paper.pmid,
+      'patient',
+      hash
+    );
+    
+    setBlockchainStatus({
+      verifying: false,
+      result: {
+        success: true,
+        message: '✅ Proof stored on blockchain successfully!',
+        txHash: result.txHash,
+        blockNumber: result.blockNumber,
+        timestamp: result.timestamp
+      }
+    });
+    
+  } catch (error: any) {
+    console.error('Blockchain error:', error);
+    
+    // Show detailed error to user
+    setBlockchainStatus({
+      verifying: false,
+      error: error.message || 'Transaction failed. Check console for details.'
+    });
+  }
+};
 
   const handleCheckBlockchain = async () => {
     if (!walletConnected) {
