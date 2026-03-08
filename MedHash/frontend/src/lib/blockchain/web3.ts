@@ -180,8 +180,7 @@ export class BlockchainService {
       
       return {
         verified: result[0],
-        timestamp: result[1] ? Number(result[1]) : null,
-        txhash:result[2] ? result[2] : null
+        timestamp: result[1] ? Number(result[1]) : null
       };
     } catch (error: any) {
       console.error('❌ Verify failed:', error);
