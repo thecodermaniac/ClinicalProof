@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { apiClient } from '../../lib/api/client';
 import { formatDistanceToNow } from 'date-fns';
 
 interface Summary {

@@ -180,7 +180,7 @@ export default function Home() {
             success: true,
             message: '✅ Proof verified on blockchain!',
             timestamp: result.timestamp ? new Date(result.timestamp * 1000).toLocaleString() : null,
-            proof: result.proof
+            proof: result.txhash
           }
         });
       } else {

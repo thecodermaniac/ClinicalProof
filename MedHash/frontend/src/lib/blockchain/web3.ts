@@ -18,9 +18,9 @@ export class BlockchainService {
 
   async connect(): Promise<string> {
     try {
-      if (!window.ethereum) throw new Error('Please install MetaMask');
+      if (!(window as any).ethereum) throw new Error('Please install MetaMask');
       
-      this.provider = new BrowserProvider(window.ethereum);
+      this.provider = new BrowserProvider((window as any).ethereum);
       const signer = await this.provider.getSigner();
       this.signerAddress = await signer.getAddress();
       
@@ -77,14 +77,14 @@ export class BlockchainService {
       }
 
       // Get the signer's address for logging
-      const signer = await this.contract!.runner.getAddress();
+      const signer = await (this.contract!.runner as any).getAddress();
       console.log('👤 Signer address:', signer);
 
       // Check balance
       const balance = await this.provider!.getBalance(signer);
       console.log('💰 Signer balance:', balance.toString(), 'wei');
 
-      if (balance === 0n) {
+      if (balance === BigInt(0)) {
         throw new Error('Insufficient balance. Get Sepolia ETH from a faucet.');
       }
 
@@ -100,12 +100,12 @@ export class BlockchainService {
           transaction: estimateError.transaction
         });
         // Use default gas limit
-        gasEstimate = 500000n;
+        gasEstimate = BigInt(500000);
       }
 
       // Send transaction with explicit gas limit
       const tx = await this.contract!.storeProof(pmid, summaryType, summaryHash, {
-        gasLimit: gasEstimate * 120n / 100n, // Add 20% buffer
+        gasLimit: (gasEstimate * BigInt(120)) / BigInt(100), // Add 20% buffer
       });
       
       console.log('✍️ Transaction sent:', {
@@ -180,7 +180,8 @@ export class BlockchainService {
       
       return {
         verified: result[0],
-        timestamp: result[1] ? Number(result[1]) : null
+        timestamp: result[1] ? Number(result[1]) : null,
+        txhash:result[2] ? result[2] : null
       };
     } catch (error: any) {
       console.error('❌ Verify failed:', error);
